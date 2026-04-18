@@ -1,0 +1,315 @@
+from __future__ import annotations
+
+import io
+import logging
+import os
+import re
+import shutil
+import subprocess
+import tempfile
+import wave
+from pathlib import Path
+from typing import Any
+
+from app.config import Settings
+
+
+logger = logging.getLogger(__name__)
+
+
+class PiperTTS:
+    def __init__(self, settings: Settings) -> None:
+        self.settings = settings
+        self._fallback = False
+        self._piper_exe = self._resolve_piper_executable()
+        self._default_model_path = self._resolve_preferred_model(
+            self.settings.piper_default_voice_id,
+            self.settings.piper_model_path,
+        )
+        chinese_model = self.resolve_voice_model(self.settings.piper_chinese_voice_id)
+        self._chinese_model_path = chinese_model if chinese_model else None
+        chinese_fallback_model = self.resolve_voice_model(self.settings.piper_chinese_fallback_voice_id)
+        self._chinese_fallback_model_path = chinese_fallback_model if chinese_fallback_model else None
+        self._last_model_path = self._default_model_path
+        self._last_voice_reason = "default"
+        self._last_text_language = "unknown"
+        self._python_piper_voice_cache: dict[str, Any] = {}
+        self._logged_xiaoya_cli_incompat = False
+        self._validate_paths()
+
+    @staticmethod
+    def _voice_id_from_path(model_path: str | None) -> str | None:
+        if not model_path:
+            return None
+        return Path(model_path).stem
+
+    def runtime_status(self) -> dict[str, str | bool | None]:
+        return {
+            "tts_available": not self._fallback,
+            "tts_default_voice_id": self._voice_id_from_path(self._default_model_path),
+            "tts_chinese_voice_id": self._voice_id_from_path(self._chinese_model_path),
+            "tts_chinese_fallback_voice_id": self._voice_id_from_path(self._chinese_fallback_model_path),
+            "tts_last_voice_id": self._voice_id_from_path(self._last_model_path),
+            "tts_last_voice_reason": self._last_voice_reason,
+            "tts_last_text_language": self._last_text_language,
+        }
+
+    def _resolve_piper_executable(self) -> str | None:
+        configured = Path(self.settings.piper_exe_path)
+        candidates: list[Path] = [configured]
+
+        # In containers we may receive a Windows .exe path from old settings.
+        if configured.suffix.lower() == ".exe":
+            candidates.append(configured.with_suffix(""))
+
+        candidates.append(Path("/opt/piper/piper/piper"))
+        candidates.append(Path("/opt/piper/piper"))
+
+        discovered = shutil.which("piper")
+        if discovered:
+            candidates.append(Path(discovered))
+
+        seen: set[str] = set()
+        for candidate in candidates:
+            candidate_str = str(candidate)
+            if candidate_str in seen:
+                continue
+            seen.add(candidate_str)
+
+            if not candidate.exists():
+                continue
+
+            if os.name == "nt" or os.access(candidate, os.X_OK):
+                return candidate_str
+
+        return None
+
+    def _validate_paths(self) -> None:
+        exe_exists = bool(self._piper_exe and Path(self._piper_exe).exists())
+        model = Path(self._default_model_path)
+        if not exe_exists or not model.exists():
+            self._fallback = True
+            logger.warning(
+                "Piper fallback enabled: exe_exists=%s model_exists=%s configured_exe=%s resolved_exe=%s",
+                exe_exists,
+                model.exists(),
+                self.settings.piper_exe_path,
+                self._piper_exe,
+            )
+
+    def _resolve_preferred_model(self, voice_id: str | None, fallback: str | None = None) -> str:
+        resolved = self.resolve_voice_model(voice_id)
+        if resolved:
+            return resolved
+        if fallback:
+            return fallback
+        return ""
+
+    @staticmethod
+    def _contains_cjk(text: str) -> bool:
+        return any("\u4e00" <= ch <= "\u9fff" for ch in text)
+
+    @staticmethod
+    def _language_from_tag(language_tag: str | None) -> str | None:
+        if not language_tag:
+            return None
+
+        normalized = language_tag.lower().strip()
+        if not normalized:
+            return None
+
+        chinese_prefixes = ("zh", "yue", "cn", "cmn")
+        if normalized.startswith(chinese_prefixes):
+            return "chinese"
+        return "english"
+
+    def _detect_language(self, text: str) -> str:
+        return "chinese" if self._contains_cjk(text) else "english"
+
+    def list_available_voices(self) -> list[dict[str, str]]:
+        voices_dir = Path(self.settings.piper_voices_dir)
+        if not voices_dir.exists():
+            return []
+
+        voices: list[dict[str, str]] = []
+        for model_path in sorted(voices_dir.glob("*.onnx")):
+            config_path = model_path.with_suffix(model_path.suffix + ".json")
+            voices.append(
+                {
+                    "id": model_path.stem,
+                    "label": model_path.stem.replace("_", " "),
+                    "model_path": str(model_path),
+                    "config_path": str(config_path) if config_path.exists() else "",
+                }
+            )
+        return voices
+
+    def resolve_voice_model(self, voice_id: str | None) -> str | None:
+        if not voice_id:
+            return None
+
+        candidate = Path(voice_id)
+        if candidate.is_absolute() and candidate.exists():
+            return str(candidate)
+
+        voices_dir = Path(self.settings.piper_voices_dir)
+        if not voice_id.endswith(".onnx"):
+            candidate = voices_dir / f"{voice_id}.onnx"
+            if candidate.exists():
+                return str(candidate)
+
+        candidate = voices_dir / voice_id
+        if candidate.exists():
+            return str(candidate)
+
+        return None
+
+    def _synthesize_with_model(self, text: str, model_path: str, expected_failure: bool = False) -> bytes:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            out_path = Path(tmpdir) / "chunk.wav"
+            cmd = [
+                self._piper_exe or self.settings.piper_exe_path,
+                "--model",
+                model_path,
+                "--output_file",
+                str(out_path),
+            ]
+
+            config_path = Path(model_path).with_suffix(Path(model_path).suffix + ".json")
+            if config_path.exists():
+                cmd.extend(["--config", str(config_path)])
+
+            process = subprocess.run(
+                cmd,
+                input=text.encode("utf-8"),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+            if process.returncode != 0 or not out_path.exists():
+                stderr_msg = process.stderr.decode("utf-8", errors="ignore").strip()
+                is_xiaoya_codepoint_error = (
+                    "zh_CN-xiao_ya-medium" in model_path
+                    and "not a single codepoint" in stderr_msg
+                )
+                if expected_failure and is_xiaoya_codepoint_error:
+                    if not self._logged_xiaoya_cli_incompat:
+                        logger.info(
+                            "Piper CLI incompatibility for zh_CN-xiao_ya-medium detected; using Python Piper retry."
+                        )
+                        self._logged_xiaoya_cli_incompat = True
+                else:
+                    logger.warning(
+                        "TTS synth failed: model=%s returncode=%s stderr=%r",
+                        model_path,
+                        process.returncode,
+                        stderr_msg[:240],
+                    )
+                return b""
+
+            return out_path.read_bytes()
+
+    def _synthesize_with_python_piper(self, text: str, model_path: str) -> bytes:
+        try:
+            from piper.voice import PiperVoice  # type: ignore
+        except Exception as exc:
+            logger.warning("Python piper runtime unavailable: %s", exc)
+            return b""
+
+        try:
+            voice = self._python_piper_voice_cache.get(model_path)
+            if voice is None:
+                config_path = f"{model_path}.json"
+                voice = PiperVoice.load(model_path, config_path=config_path, use_cuda=False)
+                self._python_piper_voice_cache[model_path] = voice
+
+            chunks = list(voice.synthesize(text))
+            if not chunks:
+                return b""
+
+            pcm = b"".join(getattr(chunk, "audio_int16_bytes", b"") for chunk in chunks)
+            if not pcm:
+                return b""
+
+            first = chunks[0]
+            sample_rate = int(getattr(first, "sample_rate", self.settings.tts_sample_rate) or self.settings.tts_sample_rate)
+            channels = int(getattr(first, "sample_channels", 1) or 1)
+            sample_width = int(getattr(first, "sample_width", 2) or 2)
+
+            buffer = io.BytesIO()
+            with wave.open(buffer, "wb") as wav:
+                wav.setnchannels(channels)
+                wav.setsampwidth(sample_width)
+                wav.setframerate(sample_rate)
+                wav.writeframes(pcm)
+
+            return buffer.getvalue()
+        except Exception as exc:
+            logger.warning("Python piper synth failed: model=%s error=%s", model_path, exc)
+            return b""
+
+    @staticmethod
+    def _sanitize_for_chinese_voice(text: str) -> str:
+        # Keep Chinese characters/punctuation and drop Latin tokens that break some Chinese Piper voices.
+        sanitized = re.sub(r"[A-Za-z]+", " ", text)
+        sanitized = re.sub(r"\s+", " ", sanitized).strip()
+        return sanitized or "你好"
+
+    def synthesize(
+        self,
+        text: str,
+        voice_model_path: str | None = None,
+        stt_language_tag: str | None = None,
+    ) -> bytes:
+        if self._fallback:
+            logger.info("TTS synth skipped (fallback enabled)")
+            return b""
+
+        tagged_language = self._language_from_tag(stt_language_tag)
+        language = tagged_language or self._detect_language(text)
+        is_cjk = language == "chinese"
+        preferred_model = voice_model_path or self._default_model_path
+        candidates: list[tuple[str | None, str]] = []
+
+        if voice_model_path:
+            candidates.append((voice_model_path, "selected"))
+        elif is_cjk:
+            candidates.append((self._chinese_model_path, "chinese_primary"))
+        else:
+            candidates.append((preferred_model, "default"))
+            if preferred_model != self._default_model_path:
+                candidates.append((self._default_model_path, "default_fallback"))
+
+        seen: set[str] = set()
+        for model_path, reason in candidates:
+            if not model_path or model_path in seen:
+                continue
+            seen.add(model_path)
+
+            if not Path(model_path).exists():
+                logger.warning("TTS model missing: %s", model_path)
+                continue
+
+            synthesis_text = text
+            if language == "chinese" and reason.startswith("chinese"):
+                synthesis_text = self._sanitize_for_chinese_voice(text)
+
+            expected_cli_failure = language == "chinese" and reason == "chinese_primary"
+            audio = self._synthesize_with_model(synthesis_text, model_path, expected_failure=expected_cli_failure)
+            if not audio and language == "chinese" and reason == "chinese_primary":
+                # For pinyin-based Chinese voices (e.g. xiao_ya), CLI piper may fail on older builds.
+                audio = self._synthesize_with_python_piper(synthesis_text, model_path)
+
+            if audio:
+                self._last_model_path = model_path
+                self._last_voice_reason = reason
+                self._last_text_language = language
+                logger.info(
+                    "TTS model selected: language=%s voice=%s reason=%s",
+                    language,
+                    self._voice_id_from_path(model_path),
+                    reason,
+                )
+                return audio
+
+        return b""

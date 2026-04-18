@@ -1,0 +1,48 @@
+services:
+  ollama:
+    image: ollama/ollama:latest
+    container_name: local-voice-ollama
+    volumes:
+      - ollama-data:/root/.ollama
+    ports:
+      - "11434:11434"
+
+  backend:
+    build:
+      context: ./backend
+    container_name: local-voice-backend
+    depends_on:
+      - ollama
+    environment:
+      HOST: 0.0.0.0
+      PORT: 8000
+      CORS_ORIGIN: http://localhost:5173
+      LLM_PROVIDER: ollama
+      VLLM_BASE_URL: http://vllm:8000
+      VLLM_API_KEY: EMPTY
+      LLM_MODEL_NAME: qwen3.5:4b
+      LLM_FALLBACK_ENABLED: "false"
+      OLLAMA_BASE_URL: http://ollama:11434
+      OLLAMA_MODEL_NAME: qwen3.5:4b
+      SENSEVOICE_MODEL_DIR: /app/models/SenseVoiceSmall
+      SENSEVOICE_DEVICE: cpu
+      PIPER_EXE_PATH: /opt/piper/piper/piper
+      PIPER_MODEL_PATH: /app/models/piper/en_US-amy-medium.onnx
+      PIPER_CONFIG_PATH: /app/models/piper/en_US-amy-medium.onnx.json
+    volumes:
+      - ./backend/models:/app/models
+      - ./backend/bin:/app/bin
+    ports:
+      - "8000:8000"
+
+  frontend:
+    build:
+      context: ./frontend
+    container_name: local-voice-frontend
+    depends_on:
+      - backend
+    ports:
+      - "5173:80"
+
+volumes:
+  ollama-data:
