@@ -33,6 +33,7 @@ export default function App() {
   const [status, setStatus] = useState("Hold Space to talk");
   const [runtime, setRuntime] = useState({
     configured_model: "unknown",
+    models_loaded: false,
     llm_reachable: false,
     llm_running: false,
     tts_available: false,
@@ -57,6 +58,7 @@ export default function App() {
 
   const audioContextRef = useRef(null);
   const playbackChainRef = useRef(Promise.resolve());
+  const playbackGenerationRef = useRef(0);
   const activeSourceRef = useRef(null);
   const hasPlayedAudioRef = useRef(false);
   const pendingSpeechRef = useRef("");
@@ -81,7 +83,17 @@ export default function App() {
         if (msg.runtime) {
           setRuntime((prev) => ({ ...prev, ...msg.runtime }));
         }
-        setStatus("Ready - Hold Space to talk");
+        setStatus(msg.runtime?.models_loaded ? "Ready - Hold Space to talk" : "Loading models...");
+        return;
+      }
+
+      if (msg.type === "runtime_update") {
+        if (msg.runtime) {
+          setRuntime((prev) => ({ ...prev, ...msg.runtime }));
+          if (msg.runtime.models_loaded) {
+            setStatus("Ready - Hold Space to talk");
+          }
+        }
         return;
       }
 
@@ -209,6 +221,7 @@ export default function App() {
 
       if (isAssistantStreamingRef.current || ttsStreamActive || window.speechSynthesis?.speaking) {
         await interruptActiveResponse();
+        return;
       }
 
       await startRecording();
@@ -280,6 +293,7 @@ export default function App() {
   }
 
   function stopAllAudioOutput() {
+    playbackGenerationRef.current += 1;
     pendingSpeechRef.current = "";
     if (window.speechSynthesis) {
       window.speechSynthesis.cancel();
@@ -397,13 +411,21 @@ export default function App() {
 
   async function enqueueAudioChunk(base64) {
     await ensureAudioContext();
+    const generation = playbackGenerationRef.current;
 
     playbackChainRef.current = playbackChainRef.current
       .then(async () => {
+        if (generation !== playbackGenerationRef.current) {
+          return;
+        }
         const context = audioContextRef.current;
         const arrayBuffer = base64ToArrayBuffer(base64);
         const audioBuffer = await context.decodeAudioData(arrayBuffer.slice(0));
         await new Promise((resolve) => {
+          if (generation !== playbackGenerationRef.current) {
+            resolve();
+            return;
+          }
           const source = context.createBufferSource();
           activeSourceRef.current = source;
           source.buffer = audioBuffer;
@@ -427,35 +449,26 @@ export default function App() {
       <header className="hero">
         <div className="hero-top">
           <p className="eyebrow">Local Realtime Voice Chatbot</p>
-          <aside className="runtime-compact" aria-label="Runtime status">
-            <p>Model: {runtime.configured_model || "unknown"}</p>
-            <p>LLM: {runtime.llm_running ? "running" : runtime.llm_reachable ? "idle" : "offline"}</p>
-            <p>
-              VRAM: {runtime.gpu_available && runtime.vram_used_mb !== null
-                ? `${runtime.vram_used_mb} / ${runtime.vram_total_mb} MB (${runtime.vram_percent}%)`
-                : "not available"}
-            </p>
-            <p>TTS: {ttsStreamActive ? "streaming" : "idle"}</p>
-            <p>TTS available: {runtime.tts_available ? "yes" : "no"}</p>
-            <p>EN voice: {runtime.tts_default_voice_id || "unknown"}</p>
-            <p>
-              ZH voice: {runtime.tts_chinese_voice_id || "unknown"}
-              {runtime.tts_chinese_fallback_voice_id
-                ? ` (fallback ${runtime.tts_chinese_fallback_voice_id})`
-                : ""}
-            </p>
-            <p>
-              Current voice: {runtime.tts_last_voice_id || "unknown"}
-              {runtime.tts_last_voice_reason ? ` (${runtime.tts_last_voice_reason})` : ""}
-              {runtime.tts_last_text_language ? ` / ${runtime.tts_last_text_language}` : ""}
-            </p>
-          </aside>
         </div>
         <h1>{`SenseVoice + ${runtime.configured_model || "LLM"} + Piper`}</h1>
         <p className="status">{status}</p>
         <div className={`ptt ${isRecording ? "active" : ""}`}>
-          <span>SPACE</span>
-          <small>{isRecording ? "Release to send" : "Hold to talk / press again to interrupt"}</small>
+          <div className="ptt-button">
+            <span>SPACE</span>
+            <small>{isRecording ? "Release to send" : "Hold to talk / press again to interrupt"}</small>
+          </div>
+          <div className="ptt-status">
+            <p><strong>Status:</strong> {runtime.models_loaded ? "Ready" : "Loading models..."}</p>
+            <p><strong>Model:</strong> {runtime.configured_model || "unknown"}</p>
+            <p><strong>EN Voice:</strong> {runtime.tts_default_voice_id || "unknown"}</p>
+            <p><strong>ZH Voice:</strong> {runtime.tts_chinese_voice_id || "unknown"}</p>
+            {runtime.tts_last_voice_id !== "unknown" && (
+              <p><strong>Current:</strong> {runtime.tts_last_voice_id} ({runtime.tts_last_voice_reason})</p>
+            )}
+            {runtime.vram_used_mb !== null && (
+              <p><strong>VRAM:</strong> {runtime.vram_used_mb} / {runtime.vram_total_mb} MB ({runtime.vram_percent}%)</p>
+            )}
+          </div>
         </div>
       </header>
 

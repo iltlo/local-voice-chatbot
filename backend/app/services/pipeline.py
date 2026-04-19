@@ -47,6 +47,7 @@ class VoicePipeline:
         audio_bytes: bytes,
         suffix: str = ".webm",
         voice_model_path: str | None = None,
+        chat_history: list[tuple[str, str]] | None = None,
     ) -> AsyncGenerator[ServerMessage, None]:
         request_id = str(uuid.uuid4())
         logger.info("Pipeline start: request_id=%s audio_bytes=%d suffix=%s", request_id, len(audio_bytes), suffix)
@@ -61,7 +62,7 @@ class VoicePipeline:
         tts_chunk_count = 0
 
         try:
-            async for token in self.llm.stream_reply(transcript):
+            async for token in self.llm.stream_reply(transcript, chat_history=chat_history):
                 full_reply += token
                 llm_token_count += 1
                 if llm_token_count <= 5 or llm_token_count % 50 == 0:

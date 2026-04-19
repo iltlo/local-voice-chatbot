@@ -28,6 +28,7 @@ services:
       LLM_FALLBACK_ENABLED: "false"
       OLLAMA_BASE_URL: http://ollama:11434
       OLLAMA_MODEL_NAME: qwen3.5:4b
+      HF_HOME: /app/models/hf-cache
       SENSEVOICE_MODEL_DIR: /app/models/SenseVoiceSmall
       SENSEVOICE_DEVICE: cpu
       PIPER_EXE_PATH: /opt/piper/piper/piper
@@ -36,6 +37,7 @@ services:
     volumes:
       - ./backend/models:/app/models
       - ./backend/bin:/app/bin
+      - ./backend/models/g2pW:/app/g2pW
     ports:
       - "8000:8000"
 

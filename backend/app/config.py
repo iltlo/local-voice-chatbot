@@ -23,9 +23,11 @@ class Settings(BaseSettings):
     ollama_model_name: str = "qwen3.5:4b"
     ollama_thinking: bool = False
     llm_request_timeout_s: float = 10.0
-    llm_n_ctx: int = 1536
+    llm_n_ctx: int = 1024
     llm_max_tokens: int = 256
     llm_temperature: float = 0.7
+    llm_history_turns: int = 4
+    llm_history_char_budget: int = 1600
 
     # SenseVoice (FunASR)
     sensevoice_model_dir: str = "./models/SenseVoiceSmall"

@@ -61,6 +61,42 @@ app.add_middleware(
 )
 
 pipeline = VoicePipeline(settings)
+_models_loaded = False
+_models_loading = False
+_preload_lock = asyncio.Lock()
+
+
+async def _preload_models() -> dict[str, bool]:
+    """Preload all models (LLM and TTS voices)."""
+    global _models_loaded, _models_loading
+    if _models_loaded:
+        return {"llm": True, "english": True, "chinese": True}
+
+    async with _preload_lock:
+        if _models_loaded:
+            return {"llm": True, "english": True, "chinese": True}
+        if _models_loading:
+            return {}
+
+        _models_loading = True
+        try:
+            _app_logger.info("Starting model preload...")
+            llm_loaded = await pipeline.llm.preload_model()
+            tts_loaded = pipeline.tts.preload_voices()
+            _models_loaded = llm_loaded and tts_loaded.get("english", False) and tts_loaded.get("chinese", False)
+            _app_logger.info(
+                "Model preload complete: llm=%s, english=%s, chinese=%s",
+                llm_loaded,
+                tts_loaded.get("english"),
+                tts_loaded.get("chinese"),
+            )
+            return {"llm": llm_loaded, **tts_loaded}
+        except Exception as exc:
+            _app_logger.exception("Model preload failed: %s", exc)
+            _models_loaded = False
+            return {}
+        finally:
+            _models_loading = False
 
 
 async def _runtime_snapshot() -> dict[str, object]:
@@ -69,10 +105,17 @@ async def _runtime_snapshot() -> dict[str, object]:
     tts_state = pipeline.tts.runtime_status()
     return {
         "status": "ok",
+        "models_loaded": _models_loaded,
+        "models_loading": _models_loading,
         **llm_state,
         **tts_state,
         **gpu_state,
     }
+
+
+@app.on_event("startup")
+async def on_startup() -> None:
+    asyncio.create_task(_preload_models())
 
 
 @app.get("/health")
@@ -98,9 +141,17 @@ def voices() -> dict[str, object]:
 @app.websocket("/ws")
 async def websocket_chat(ws: WebSocket) -> None:
     await ws.accept()
+    # Ensure preload runs and push status once it completes.
+    async def preload_and_notify() -> None:
+        await _preload_models()
+        with suppress(Exception):
+            await ws.send_json({"type": "runtime_update", "runtime": await _runtime_snapshot()})
+
+    asyncio.create_task(preload_and_notify())
     await ws.send_json(ServerMessage(type="ready", runtime=await _runtime_snapshot()).model_dump(exclude_none=True))
     active_task = None
     selected_voice_model: str | None = None
+    conversation_history: list[tuple[str, str]] = []
 
     async def cancel_active(reason: str, request_id: str | None = None) -> None:
         nonlocal active_task
@@ -114,8 +165,24 @@ async def websocket_chat(ws: WebSocket) -> None:
         )
 
     async def stream_audio_request(audio_bytes: bytes, suffix: str) -> None:
-        async for event in pipeline.handle_audio(audio_bytes, suffix=suffix, voice_model_path=selected_voice_model):
+        user_text = ""
+        assistant_text = ""
+        async for event in pipeline.handle_audio(
+            audio_bytes,
+            suffix=suffix,
+            voice_model_path=selected_voice_model,
+            chat_history=conversation_history,
+        ):
+            if event.type == "transcript":
+                user_text = event.transcript or ""
+            elif event.type == "llm_done":
+                assistant_text = event.text or ""
             await ws.send_json(event.model_dump(exclude_none=True))
+
+        if user_text.strip() and assistant_text.strip():
+            conversation_history.append((user_text, assistant_text))
+            if len(conversation_history) > 12:
+                del conversation_history[:-12]
 
     try:
         while True:

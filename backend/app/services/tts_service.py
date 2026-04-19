@@ -41,6 +41,7 @@ class PiperTTS:
         self._python_piper_voice_cache: dict[str, Any] = {}
         self._sentence_segmenters: dict[str, Any] = {}
         self._logged_xiaoya_cli_incompat = False
+        self._ensure_persistent_chinese_resources()
         self._validate_paths()
 
     @staticmethod
@@ -54,11 +55,54 @@ class PiperTTS:
             "tts_available": not self._fallback,
             "tts_default_voice_id": self._voice_id_from_path(self._default_model_path),
             "tts_chinese_voice_id": self._voice_id_from_path(self._chinese_model_path),
-            "tts_chinese_fallback_voice_id": self._voice_id_from_path(self._chinese_fallback_model_path),
             "tts_last_voice_id": self._voice_id_from_path(self._last_model_path),
             "tts_last_voice_reason": self._last_voice_reason,
             "tts_last_text_language": self._last_text_language,
         }
+
+    def _ensure_persistent_chinese_resources(self) -> None:
+        """Persist g2pW resources in mounted models path to avoid repeated downloads."""
+        runtime_path = Path("/app/g2pW")
+        persisted_path = Path(self.settings.piper_voices_dir).parent / "g2pW"
+        try:
+            persisted_path.mkdir(parents=True, exist_ok=True)
+
+            if runtime_path.is_symlink():
+                return
+
+            if runtime_path.exists() and not runtime_path.is_symlink():
+                # Keep existing files but ensure future downloads are stored on mounted path.
+                if not any(persisted_path.iterdir()):
+                    shutil.copytree(runtime_path, persisted_path, dirs_exist_ok=True)
+                return
+
+            runtime_path.symlink_to(persisted_path, target_is_directory=True)
+            logger.info("Linked Chinese phoneme cache to persistent path: %s -> %s", runtime_path, persisted_path)
+        except Exception as exc:  # noqa: BLE001
+            logger.info("Persistent Chinese cache setup skipped: %s", exc)
+
+    def preload_voices(self) -> dict[str, bool]:
+        """Preload default English and Chinese voices."""
+        results = {}
+        try:
+            logger.info("Preloading English voice: %s", self._voice_id_from_path(self._default_model_path))
+            chunks = list(self.stream_synthesize("Hi", self._default_model_path, "english"))
+            results["english"] = len(chunks) > 0
+            logger.info("English voice preloaded: %s", results["english"])
+        except Exception as exc:
+            logger.warning("English voice preload failed: %s", exc)
+            results["english"] = False
+
+        try:
+            logger.info("Preloading Chinese voice: %s", self._voice_id_from_path(self._chinese_model_path))
+            chunks = list(self.stream_synthesize("你好", self._chinese_model_path, "chinese"))
+            results["chinese"] = len(chunks) > 0
+            logger.info("Chinese voice preloaded: %s", results["chinese"])
+        except Exception as exc:
+            logger.warning("Chinese voice preload failed: %s", exc)
+            results["chinese"] = False
+
+        return results
 
     def _candidate_models(self, voice_model_path: str | None, language: str) -> list[tuple[str | None, str]]:
         preferred_model = voice_model_path or self._default_model_path
@@ -138,6 +182,11 @@ class PiperTTS:
         normalized = language_tag.lower().strip()
         if not normalized:
             return None
+
+        if normalized in {"chinese", "zh"}:
+            return "chinese"
+        if normalized in {"english", "en"}:
+            return "english"
 
         chinese_prefixes = ("zh", "yue", "cn", "cmn")
         if normalized.startswith(chinese_prefixes):

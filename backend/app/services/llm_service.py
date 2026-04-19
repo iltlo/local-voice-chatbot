@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from collections.abc import Sequence
 from typing import AsyncGenerator
 
 import httpx
@@ -16,14 +17,55 @@ class LocalLLM:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
 
-    async def stream_reply(self, prompt: str) -> AsyncGenerator[str, None]:
+    @staticmethod
+    def _system_prompt() -> str:
+        return (
+            "You are a concise and helpful local voice assistant. "
+            "Keep answers brief and conversational. "
+            "Keep the first sentence short (about 8-12 words) so speech can start quickly. "
+            "Do not output emojis."
+        )
+
+    def _build_messages(
+        self,
+        prompt: str,
+        chat_history: Sequence[tuple[str, str]] | None,
+    ) -> list[dict[str, str]]:
+        messages: list[dict[str, str]] = [{"role": "system", "content": self._system_prompt()}]
+
+        if chat_history:
+            recent_turns = list(chat_history)[-self.settings.llm_history_turns :]
+            accumulated = 0
+            kept: list[tuple[str, str]] = []
+            for user_text, assistant_text in reversed(recent_turns):
+                turn_size = len(user_text) + len(assistant_text)
+                if kept and accumulated + turn_size > self.settings.llm_history_char_budget:
+                    break
+                kept.append((user_text, assistant_text))
+                accumulated += turn_size
+
+            for user_text, assistant_text in reversed(kept):
+                if user_text.strip():
+                    messages.append({"role": "user", "content": user_text})
+                if assistant_text.strip():
+                    messages.append({"role": "assistant", "content": assistant_text})
+
+        messages.append({"role": "user", "content": prompt})
+        return messages
+
+    async def stream_reply(
+        self,
+        prompt: str,
+        chat_history: Sequence[tuple[str, str]] | None = None,
+    ) -> AsyncGenerator[str, None]:
         logger.info("LLM request: model=%s prompt=%r", self.settings.llm_model_name, prompt)
+        messages = self._build_messages(prompt, chat_history)
 
         provider = self.settings.llm_provider.lower().strip()
 
         if provider == "ollama":
             try:
-                async for token in self._stream_ollama(prompt, model_name=self.settings.llm_model_name):
+                async for token in self._stream_ollama(messages, model_name=self.settings.llm_model_name):
                     yield token
                 return
             except Exception as exc:  # noqa: BLE001
@@ -31,7 +73,7 @@ class LocalLLM:
                 reason = f"Ollama: {exc}"
         else:
             try:
-                async for token in self._stream_vllm_with_retries(prompt):
+                async for token in self._stream_vllm_with_retries(messages):
                     yield token
                 return
             except Exception as exc:  # noqa: BLE001
@@ -39,7 +81,7 @@ class LocalLLM:
 
                 if self.settings.llm_fallback_enabled:
                     try:
-                        async for token in self._stream_ollama(prompt, model_name=self.settings.ollama_model_name):
+                        async for token in self._stream_ollama(messages, model_name=self.settings.ollama_model_name):
                             yield token
                         return
                     except Exception as fallback_exc:  # noqa: BLE001
@@ -53,13 +95,13 @@ class LocalLLM:
             yield token + " "
             await asyncio.sleep(0.01)
 
-    async def _stream_vllm_with_retries(self, prompt: str) -> AsyncGenerator[str, None]:
+    async def _stream_vllm_with_retries(self, messages: list[dict[str, str]]) -> AsyncGenerator[str, None]:
         attempts = 6
         last_exc: Exception | None = None
 
         for attempt in range(1, attempts + 1):
             try:
-                async for token in self._stream_vllm(prompt):
+                async for token in self._stream_vllm(messages):
                     yield token
                 return
             except Exception as exc:  # noqa: BLE001
@@ -74,13 +116,7 @@ class LocalLLM:
             raise last_exc
         raise RuntimeError("vLLM request failed without exception")
 
-    async def _stream_vllm(self, prompt: str) -> AsyncGenerator[str, None]:
-        system_prompt = (
-            "You are a concise and helpful local voice assistant. "
-            "Keep answers brief and conversational. "
-            "Keep the first sentence short (about 8-12 words) so speech can start quickly. "
-            "Do not output emojis."
-        )
+    async def _stream_vllm(self, messages: list[dict[str, str]]) -> AsyncGenerator[str, None]:
         headers = {
             "Content-Type": "application/json",
             "Authorization": f"Bearer {self.settings.vllm_api_key}",
@@ -104,10 +140,7 @@ class LocalLLM:
 
                 payload = {
                     "model": model_name,
-                    "messages": [
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": prompt},
-                    ],
+                    "messages": messages,
                     "stream": True,
                     "temperature": self.settings.llm_temperature,
                     "max_tokens": max_tokens,
@@ -217,21 +250,16 @@ class LocalLLM:
 
         return None
 
-    async def _stream_ollama(self, prompt: str, model_name: str | None = None) -> AsyncGenerator[str, None]:
-        system_prompt = (
-            "You are a concise and helpful local voice assistant. "
-            "Keep answers brief and conversational. "
-            "Keep the first sentence short (about 8-12 words) so speech can start quickly. "
-            "Do not output emojis."
-        )
+    async def _stream_ollama(
+        self,
+        messages: list[dict[str, str]],
+        model_name: str | None = None,
+    ) -> AsyncGenerator[str, None]:
         token_count = 0
 
         payload = {
             "model": model_name or self.settings.ollama_model_name,
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": prompt},
-            ],
+            "messages": messages,
             "stream": True,
             "think": self.settings.ollama_thinking,
             "options": {
@@ -338,3 +366,23 @@ class LocalLLM:
             "running_models": [],
             "ollama_reachable": False,
         }
+
+    async def preload_model(self) -> bool:
+        """Preload the LLM model by sending a minimal request to warm it up."""
+        try:
+            logger.info("Preloading LLM model: %s", self.settings.llm_model_name)
+            # Send a minimal prompt to trigger model loading
+            token_count = 0
+            preload_messages = [
+                {"role": "system", "content": self._system_prompt()},
+                {"role": "user", "content": "Hi"},
+            ]
+            async for _ in self._stream_ollama(preload_messages, model_name=self.settings.llm_model_name):
+                token_count += 1
+                if token_count > 3:
+                    break
+            logger.info("LLM model preloaded successfully")
+            return True
+        except Exception as exc:
+            logger.warning("LLM model preload failed: %s", exc)
+            return False
