@@ -370,16 +370,59 @@ class PiperTTS:
             return segments
         return self._split_text_for_streaming(text)
 
-    def stream_synthesize(
+    @staticmethod
+    def _script_type(ch: str) -> str:
+        if "\u4e00" <= ch <= "\u9fff":
+            return "cjk"
+        if ch.isascii() and ch.isalpha():
+            return "latin"
+        return "neutral"
+
+    def _split_mixed_language_runs(self, text: str) -> list[str]:
+        stripped = text.strip()
+        if not stripped:
+            return []
+
+        has_cjk = any(self._script_type(ch) == "cjk" for ch in stripped)
+        has_latin = any(self._script_type(ch) == "latin" for ch in stripped)
+        if not (has_cjk and has_latin):
+            return [stripped]
+
+        runs: list[str] = []
+        current = ""
+        current_type: str | None = None
+
+        for ch in stripped:
+            ch_type = self._script_type(ch)
+
+            if current_type is None:
+                current = ch
+                current_type = ch_type
+                continue
+
+            # Keep punctuation/spacing attached to the active script run.
+            if ch_type == "neutral" or current_type == "neutral" or ch_type == current_type:
+                current += ch
+                if current_type == "neutral" and ch_type != "neutral":
+                    current_type = ch_type
+                continue
+
+            if current.strip():
+                runs.append(current.strip())
+            current = ch
+            current_type = ch_type
+
+        if current.strip():
+            runs.append(current.strip())
+
+        return runs or [stripped]
+
+    def _stream_single_language_synthesis(
         self,
         text: str,
-        voice_model_path: str | None = None,
-        stt_language_tag: str | None = None,
+        voice_model_path: str | None,
+        stt_language_tag: str | None,
     ) -> Iterator[bytes]:
-        if self._fallback:
-            logger.info("TTS stream skipped (fallback enabled)")
-            return
-
         tagged_language = self._language_from_tag(stt_language_tag)
         detected_language = self._detect_language(text)
         language = self.resolve_tts_language(text, stt_language_tag)
@@ -444,6 +487,24 @@ class PiperTTS:
                 )
                 yield audio
                 return
+
+    def stream_synthesize(
+        self,
+        text: str,
+        voice_model_path: str | None = None,
+        stt_language_tag: str | None = None,
+    ) -> Iterator[bytes]:
+        if self._fallback:
+            logger.info("TTS stream skipped (fallback enabled)")
+            return
+
+        run_texts = self._split_mixed_language_runs(text)
+        if len(run_texts) > 1 and not voice_model_path:
+            logger.info("TTS mixed-language split applied: runs=%d", len(run_texts))
+
+        for run_text in run_texts:
+            for audio in self._stream_single_language_synthesis(run_text, voice_model_path, stt_language_tag):
+                yield audio
 
     def synthesize(
         self,
