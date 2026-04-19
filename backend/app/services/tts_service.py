@@ -33,6 +33,8 @@ class PiperTTS:
         )
         chinese_model = self.resolve_voice_model(self.settings.piper_chinese_voice_id)
         self._chinese_model_path = chinese_model if chinese_model else None
+        cantonese_model = self.resolve_voice_model(self.settings.piper_cantonese_voice_id)
+        self._cantonese_model_path = cantonese_model if cantonese_model else None
         chinese_fallback_model = self.resolve_voice_model(self.settings.piper_chinese_fallback_voice_id)
         self._chinese_fallback_model_path = chinese_fallback_model if chinese_fallback_model else None
         self._last_model_path = self._default_model_path
@@ -55,6 +57,7 @@ class PiperTTS:
             "tts_available": not self._fallback,
             "tts_default_voice_id": self._voice_id_from_path(self._default_model_path),
             "tts_chinese_voice_id": self._voice_id_from_path(self._chinese_model_path),
+            "tts_cantonese_voice_id": self._voice_id_from_path(self._cantonese_model_path),
             "tts_last_voice_id": self._voice_id_from_path(self._last_model_path),
             "tts_last_voice_reason": self._last_voice_reason,
             "tts_last_text_language": self._last_text_language,
@@ -110,6 +113,9 @@ class PiperTTS:
 
         if voice_model_path:
             candidates.append((voice_model_path, "selected"))
+        elif language == "cantonese":
+            # Prefer explicit Cantonese model only. If absent, let pipeline trigger basic TTS fallback.
+            candidates.append((self._cantonese_model_path, "cantonese_primary"))
         elif language == "chinese":
             candidates.append((self._chinese_model_path, "chinese_primary"))
         else:
@@ -183,13 +189,16 @@ class PiperTTS:
         if not normalized:
             return None
 
-        if normalized in {"chinese", "zh"}:
+        if normalized in {"cantonese", "yue", "zh-hk", "zh-yue", "zh-yue-hant"}:
+            return "cantonese"
+        if normalized in {"chinese", "zh", "cmn", "mandarin"}:
             return "chinese"
         if normalized in {"english", "en"}:
             return "english"
 
-        chinese_prefixes = ("zh", "yue", "cn", "cmn")
-        if normalized.startswith(chinese_prefixes):
+        if normalized.startswith(("yue", "zh-hk", "zh-yue")):
+            return "cantonese"
+        if normalized.startswith(("zh", "cn", "cmn")):
             return "chinese"
         return "english"
 
@@ -206,6 +215,16 @@ class PiperTTS:
 
         # For mixed output, choose the dominant script in the assistant text.
         return "chinese" if cjk_count >= latin_count else "english"
+
+    def resolve_tts_language(self, text: str, stt_language_tag: str | None) -> str:
+        detected_language = self._detect_language(text)
+        tagged_language = self._language_from_tag(stt_language_tag)
+
+        # Cantonese users often receive Chinese-script output. Keep Cantonese voice path in that case.
+        if tagged_language == "cantonese" and detected_language == "chinese":
+            return "cantonese"
+
+        return detected_language or tagged_language or "english"
 
     def list_available_voices(self) -> list[dict[str, str]]:
         voices_dir = Path(self.settings.piper_voices_dir)
@@ -363,13 +382,14 @@ class PiperTTS:
 
         tagged_language = self._language_from_tag(stt_language_tag)
         detected_language = self._detect_language(text)
-        language = detected_language or tagged_language or "english"
+        language = self.resolve_tts_language(text, stt_language_tag)
 
         if detected_language and tagged_language and detected_language != tagged_language:
             logger.info(
-                "TTS language resolved from output text: detected=%s stt_tag=%s",
+                "TTS language resolved with override: detected=%s stt_tag=%s final=%s",
                 detected_language,
                 tagged_language,
+                language,
             )
 
         candidates = self._candidate_models(voice_model_path, language)

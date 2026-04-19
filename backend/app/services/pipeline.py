@@ -114,6 +114,7 @@ class VoicePipeline:
                         )
 
             final_text = full_reply.strip()
+            final_tts_language = self.tts.resolve_tts_language(final_text, stt_result.language_tag)
             if final_text:
                 final_segments, _ = self._extract_flushable_segments(tts_pending_text, keep_last_complete=False)
                 if not final_segments and tts_pending_text.strip():
@@ -155,7 +156,12 @@ class VoicePipeline:
                                 is_final,
                             )
                 elif tts_chunk_count == 0:
-                    logger.info("TTS audio not generated: request_id=%s chars=%d", request_id, len(final_text))
+                    logger.info(
+                        "TTS audio not generated: request_id=%s chars=%d resolved_language=%s",
+                        request_id,
+                        len(final_text),
+                        final_tts_language,
+                    )
 
             logger.info(
                 "Pipeline done: request_id=%s llm_tokens=%d tts_chunks=%d reply_chars=%d",
@@ -164,7 +170,14 @@ class VoicePipeline:
                 tts_chunk_count,
                 len(final_text),
             )
-            yield ServerMessage(type="llm_done", text=final_text, request_id=request_id)
+            llm_done_reason = "browser_tts_fallback" if (tts_chunk_count == 0 and final_tts_language == "cantonese") else None
+            yield ServerMessage(
+                type="llm_done",
+                text=final_text,
+                request_id=request_id,
+                tts_text_language=final_tts_language,
+                tts_voice_reason=llm_done_reason,
+            )
         except asyncio.CancelledError:
             logger.info("Pipeline cancelled: request_id=%s", request_id)
             raise

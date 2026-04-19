@@ -38,6 +38,7 @@ class Settings(BaseSettings):
     piper_voices_dir: str = "./models/piper"
     piper_default_voice_id: str = "en_US-hfc_female-medium"
     piper_chinese_voice_id: str = "zh_CN-xiao_ya-medium"
+    piper_cantonese_voice_id: str = ""
     piper_chinese_fallback_voice_id: str = "zh_CN-huayan-medium"
     piper_model_path: str = "./models/piper/en_US-amy-medium.onnx"
     piper_config_path: str = "./models/piper/en_US-amy-medium.onnx.json"

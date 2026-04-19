@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 
 const WS_URL = import.meta.env.VITE_WS_URL || "ws://localhost:8000/ws";
 const STATUS_URL = WS_URL.replace("ws://", "http://").replace("wss://", "https://").replace(/\/ws$/, "/status");
-const ENABLE_BROWSER_TTS_FALLBACK = false;
+const ENABLE_BROWSER_TTS_FALLBACK = true;
 
 function bytesToBase64(bytes) {
   let binary = "";
@@ -39,6 +39,7 @@ export default function App() {
     tts_available: false,
     tts_default_voice_id: "unknown",
     tts_chinese_voice_id: "unknown",
+    tts_cantonese_voice_id: "unknown",
     tts_chinese_fallback_voice_id: "unknown",
     tts_last_voice_id: "unknown",
     tts_last_voice_reason: "unknown",
@@ -62,6 +63,7 @@ export default function App() {
   const activeSourceRef = useRef(null);
   const hasPlayedAudioRef = useRef(false);
   const pendingSpeechRef = useRef("");
+  const pendingSpeechLanguageRef = useRef("english");
   const currentRequestIdRef = useRef(null);
   const interruptedRequestIdsRef = useRef(new Set());
   const isAssistantStreamingRef = useRef(false);
@@ -180,12 +182,16 @@ export default function App() {
           isAssistantStreamingRef.current = false;
           return;
         }
-        if (ENABLE_BROWSER_TTS_FALLBACK && !hasPlayedAudioRef.current) {
+
+        const shouldFallback = ENABLE_BROWSER_TTS_FALLBACK && !hasPlayedAudioRef.current;
+        if (shouldFallback) {
           if (msg.text && !pendingSpeechRef.current.trim()) {
             pendingSpeechRef.current = msg.text;
           }
+          pendingSpeechLanguageRef.current = msg.tts_text_language || "english";
           streamFallbackSpeech(true);
         }
+
         if (requestId && msg.text) {
           setChatHistory((prev) =>
             prev.map((item) => (item.id === requestId ? { ...item, assistantText: msg.text } : item))
@@ -280,7 +286,7 @@ export default function App() {
     }
   }
 
-  function speakFallback(text) {
+  function speakFallback(text, ttsLanguage = "english") {
     const synth = window.speechSynthesis;
     if (!synth || !text?.trim()) {
       return;
@@ -289,6 +295,21 @@ export default function App() {
     const utterance = new SpeechSynthesisUtterance(text);
     utterance.rate = 1;
     utterance.pitch = 1;
+
+    let preferredLang = "en-US";
+    if (ttsLanguage === "cantonese") {
+      preferredLang = "zh-HK";
+    } else if (ttsLanguage === "chinese") {
+      preferredLang = "zh-CN";
+    }
+    utterance.lang = preferredLang;
+
+    const voices = synth.getVoices();
+    const matchedVoice = voices.find((voice) => voice.lang?.toLowerCase().startsWith(preferredLang.toLowerCase()));
+    if (matchedVoice) {
+      utterance.voice = matchedVoice;
+    }
+
     synth.speak(utterance);
   }
 
@@ -347,7 +368,7 @@ export default function App() {
       return;
     }
 
-    speakFallback(text.trim());
+    speakFallback(text.trim(), pendingSpeechLanguageRef.current || "english");
     pendingSpeechRef.current = "";
   }
 
@@ -462,6 +483,7 @@ export default function App() {
             <p><strong>Model:</strong> {runtime.configured_model || "unknown"}</p>
             <p><strong>EN Voice:</strong> {runtime.tts_default_voice_id || "unknown"}</p>
             <p><strong>ZH Voice:</strong> {runtime.tts_chinese_voice_id || "unknown"}</p>
+            <p><strong>YUE Voice:</strong> {runtime.tts_cantonese_voice_id || "browser fallback"}</p>
             {runtime.tts_last_voice_id !== "unknown" && (
               <p><strong>Current:</strong> {runtime.tts_last_voice_id} ({runtime.tts_last_voice_reason})</p>
             )}
