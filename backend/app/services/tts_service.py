@@ -193,8 +193,19 @@ class PiperTTS:
             return "chinese"
         return "english"
 
-    def _detect_language(self, text: str) -> str:
-        return "chinese" if self._contains_cjk(text) else "english"
+    def _detect_language(self, text: str) -> str | None:
+        cjk_count = len(re.findall(r"[\u4e00-\u9fff]", text))
+        latin_count = len(re.findall(r"[A-Za-z]", text))
+
+        if cjk_count == 0 and latin_count == 0:
+            return None
+        if cjk_count == 0:
+            return "english"
+        if latin_count == 0:
+            return "chinese"
+
+        # For mixed output, choose the dominant script in the assistant text.
+        return "chinese" if cjk_count >= latin_count else "english"
 
     def list_available_voices(self) -> list[dict[str, str]]:
         voices_dir = Path(self.settings.piper_voices_dir)
@@ -351,7 +362,16 @@ class PiperTTS:
             return
 
         tagged_language = self._language_from_tag(stt_language_tag)
-        language = tagged_language or self._detect_language(text)
+        detected_language = self._detect_language(text)
+        language = detected_language or tagged_language or "english"
+
+        if detected_language and tagged_language and detected_language != tagged_language:
+            logger.info(
+                "TTS language resolved from output text: detected=%s stt_tag=%s",
+                detected_language,
+                tagged_language,
+            )
+
         candidates = self._candidate_models(voice_model_path, language)
 
         seen: set[str] = set()
