@@ -2,6 +2,10 @@ services:
   ollama:
     image: ollama/ollama:latest
     container_name: local-voice-ollama
+    gpus: all
+    environment:
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
     volumes:
       - ollama-data:/root/.ollama
     ports:

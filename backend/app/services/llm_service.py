@@ -77,7 +77,9 @@ class LocalLLM:
     async def _stream_vllm(self, prompt: str) -> AsyncGenerator[str, None]:
         system_prompt = (
             "You are a concise and helpful local voice assistant. "
-            "Keep answers brief and conversational. Do not output emojis."
+            "Keep answers brief and conversational. "
+            "Keep the first sentence short (about 8-12 words) so speech can start quickly. "
+            "Do not output emojis."
         )
         headers = {
             "Content-Type": "application/json",
@@ -218,7 +220,9 @@ class LocalLLM:
     async def _stream_ollama(self, prompt: str, model_name: str | None = None) -> AsyncGenerator[str, None]:
         system_prompt = (
             "You are a concise and helpful local voice assistant. "
-            "Keep answers brief and conversational. Do not output emojis."
+            "Keep answers brief and conversational. "
+            "Keep the first sentence short (about 8-12 words) so speech can start quickly. "
+            "Do not output emojis."
         )
         token_count = 0
 

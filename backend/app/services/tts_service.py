@@ -9,9 +9,14 @@ import subprocess
 import tempfile
 import wave
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 from app.config import Settings
+
+try:
+    import pysbd  # type: ignore
+except Exception:  # pragma: no cover - optional dependency fallback
+    pysbd = None
 
 
 logger = logging.getLogger(__name__)
@@ -34,6 +39,7 @@ class PiperTTS:
         self._last_voice_reason = "default"
         self._last_text_language = "unknown"
         self._python_piper_voice_cache: dict[str, Any] = {}
+        self._sentence_segmenters: dict[str, Any] = {}
         self._logged_xiaoya_cli_incompat = False
         self._validate_paths()
 
@@ -53,6 +59,21 @@ class PiperTTS:
             "tts_last_voice_reason": self._last_voice_reason,
             "tts_last_text_language": self._last_text_language,
         }
+
+    def _candidate_models(self, voice_model_path: str | None, language: str) -> list[tuple[str | None, str]]:
+        preferred_model = voice_model_path or self._default_model_path
+        candidates: list[tuple[str | None, str]] = []
+
+        if voice_model_path:
+            candidates.append((voice_model_path, "selected"))
+        elif language == "chinese":
+            candidates.append((self._chinese_model_path, "chinese_primary"))
+        else:
+            candidates.append((preferred_model, "default"))
+            if preferred_model != self._default_model_path:
+                candidates.append((self._default_model_path, "default_fallback"))
+
+        return candidates
 
     def _resolve_piper_executable(self) -> str | None:
         configured = Path(self.settings.piper_exe_path)
@@ -209,44 +230,39 @@ class PiperTTS:
 
             return out_path.read_bytes()
 
-    def _synthesize_with_python_piper(self, text: str, model_path: str) -> bytes:
-        try:
-            from piper.voice import PiperVoice  # type: ignore
-        except Exception as exc:
-            logger.warning("Python piper runtime unavailable: %s", exc)
+    @staticmethod
+    def _wav_from_pcm(pcm: bytes, sample_rate: int, channels: int, sample_width: int) -> bytes:
+        if not pcm:
             return b""
 
-        try:
-            voice = self._python_piper_voice_cache.get(model_path)
-            if voice is None:
-                config_path = f"{model_path}.json"
-                voice = PiperVoice.load(model_path, config_path=config_path, use_cuda=False)
-                self._python_piper_voice_cache[model_path] = voice
+        buffer = io.BytesIO()
+        with wave.open(buffer, "wb") as wav:
+            wav.setnchannels(channels)
+            wav.setsampwidth(sample_width)
+            wav.setframerate(sample_rate)
+            wav.writeframes(pcm)
+        return buffer.getvalue()
 
-            chunks = list(voice.synthesize(text))
-            if not chunks:
-                return b""
+    def _stream_with_python_piper(self, text: str, model_path: str) -> Iterator[bytes]:
+        from piper.voice import PiperVoice  # type: ignore
 
-            pcm = b"".join(getattr(chunk, "audio_int16_bytes", b"") for chunk in chunks)
+        voice = self._python_piper_voice_cache.get(model_path)
+        if voice is None:
+            config_path = f"{model_path}.json"
+            voice = PiperVoice.load(model_path, config_path=config_path, use_cuda=False)
+            self._python_piper_voice_cache[model_path] = voice
+
+        for chunk in voice.synthesize(text):
+            pcm = getattr(chunk, "audio_int16_bytes", b"")
             if not pcm:
-                return b""
+                continue
 
-            first = chunks[0]
-            sample_rate = int(getattr(first, "sample_rate", self.settings.tts_sample_rate) or self.settings.tts_sample_rate)
-            channels = int(getattr(first, "sample_channels", 1) or 1)
-            sample_width = int(getattr(first, "sample_width", 2) or 2)
-
-            buffer = io.BytesIO()
-            with wave.open(buffer, "wb") as wav:
-                wav.setnchannels(channels)
-                wav.setsampwidth(sample_width)
-                wav.setframerate(sample_rate)
-                wav.writeframes(pcm)
-
-            return buffer.getvalue()
-        except Exception as exc:
-            logger.warning("Python piper synth failed: model=%s error=%s", model_path, exc)
-            return b""
+            sample_rate = int(getattr(chunk, "sample_rate", self.settings.tts_sample_rate) or self.settings.tts_sample_rate)
+            channels = int(getattr(chunk, "sample_channels", 1) or 1)
+            sample_width = int(getattr(chunk, "sample_width", 2) or 2)
+            wav_chunk = self._wav_from_pcm(pcm, sample_rate, channels, sample_width)
+            if wav_chunk:
+                yield wav_chunk
 
     @staticmethod
     def _sanitize_for_chinese_voice(text: str) -> str:
@@ -255,30 +271,39 @@ class PiperTTS:
         sanitized = re.sub(r"\s+", " ", sanitized).strip()
         return sanitized or "你好"
 
-    def synthesize(
+    @staticmethod
+    def _split_text_for_streaming(text: str) -> list[str]:
+        parts = re.split(r"(?<=[。！？!?;；.])\s+", text.strip())
+        return [part for part in parts if part]
+
+    def _split_text_with_pysbd(self, text: str, language: str) -> list[str]:
+        if pysbd is None:
+            return self._split_text_for_streaming(text)
+
+        lang_code = "zh" if language == "chinese" else "en"
+        segmenter = self._sentence_segmenters.get(lang_code)
+        if segmenter is None:
+            segmenter = pysbd.Segmenter(language=lang_code, clean=False)
+            self._sentence_segmenters[lang_code] = segmenter
+
+        segments = [segment.strip() for segment in segmenter.segment(text) if segment and segment.strip()]
+        if segments:
+            return segments
+        return self._split_text_for_streaming(text)
+
+    def stream_synthesize(
         self,
         text: str,
         voice_model_path: str | None = None,
         stt_language_tag: str | None = None,
-    ) -> bytes:
+    ) -> Iterator[bytes]:
         if self._fallback:
-            logger.info("TTS synth skipped (fallback enabled)")
-            return b""
+            logger.info("TTS stream skipped (fallback enabled)")
+            return
 
         tagged_language = self._language_from_tag(stt_language_tag)
         language = tagged_language or self._detect_language(text)
-        is_cjk = language == "chinese"
-        preferred_model = voice_model_path or self._default_model_path
-        candidates: list[tuple[str | None, str]] = []
-
-        if voice_model_path:
-            candidates.append((voice_model_path, "selected"))
-        elif is_cjk:
-            candidates.append((self._chinese_model_path, "chinese_primary"))
-        else:
-            candidates.append((preferred_model, "default"))
-            if preferred_model != self._default_model_path:
-                candidates.append((self._default_model_path, "default_fallback"))
+        candidates = self._candidate_models(voice_model_path, language)
 
         seen: set[str] = set()
         for model_path, reason in candidates:
@@ -294,12 +319,30 @@ class PiperTTS:
             if language == "chinese" and reason.startswith("chinese"):
                 synthesis_text = self._sanitize_for_chinese_voice(text)
 
+            yielded = False
+            try:
+                segments = self._split_text_with_pysbd(synthesis_text, language)
+                for segment in segments:
+                    for wav_chunk in self._stream_with_python_piper(segment, model_path):
+                        yielded = True
+                        yield wav_chunk
+
+                if yielded:
+                    self._last_model_path = model_path
+                    self._last_voice_reason = reason
+                    self._last_text_language = language
+                    logger.info(
+                        "TTS model selected: language=%s voice=%s reason=%s",
+                        language,
+                        self._voice_id_from_path(model_path),
+                        reason,
+                    )
+                    return
+            except Exception as exc:
+                logger.warning("Python piper stream failed: model=%s error=%s", model_path, exc)
+
             expected_cli_failure = language == "chinese" and reason == "chinese_primary"
             audio = self._synthesize_with_model(synthesis_text, model_path, expected_failure=expected_cli_failure)
-            if not audio and language == "chinese" and reason == "chinese_primary":
-                # For pinyin-based Chinese voices (e.g. xiao_ya), CLI piper may fail on older builds.
-                audio = self._synthesize_with_python_piper(synthesis_text, model_path)
-
             if audio:
                 self._last_model_path = model_path
                 self._last_voice_reason = reason
@@ -310,6 +353,18 @@ class PiperTTS:
                     self._voice_id_from_path(model_path),
                     reason,
                 )
-                return audio
+                yield audio
+                return
 
-        return b""
+    def synthesize(
+        self,
+        text: str,
+        voice_model_path: str | None = None,
+        stt_language_tag: str | None = None,
+    ) -> bytes:
+        chunks = list(self.stream_synthesize(text, voice_model_path, stt_language_tag))
+        if not chunks:
+            return b""
+        if len(chunks) == 1:
+            return chunks[0]
+        return b"".join(chunks)
