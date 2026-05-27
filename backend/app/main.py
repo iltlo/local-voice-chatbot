@@ -131,9 +131,9 @@ async def runtime_status() -> dict[str, object]:
 @app.get("/voices")
 def voices() -> dict[str, object]:
     return {
-        "default_voice": pipeline.tts._default_model_path,
-        "chinese_voice": pipeline.tts._chinese_model_path,
-        "chinese_fallback_voice": pipeline.tts._chinese_fallback_model_path,
+        "default_voice": pipeline.tts.default_model_path,
+        "chinese_voice": pipeline.tts.chinese_model_path,
+        "chinese_fallback_voice": pipeline.tts.chinese_fallback_model_path,
         "voices": pipeline.tts.list_available_voices(),
     }
 

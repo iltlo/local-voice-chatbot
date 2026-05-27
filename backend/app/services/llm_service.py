@@ -370,14 +370,19 @@ class LocalLLM:
     async def preload_model(self) -> bool:
         """Preload the LLM model by sending a minimal request to warm it up."""
         try:
-            logger.info("Preloading LLM model: %s", self.settings.llm_model_name)
-            # Send a minimal prompt to trigger model loading
-            token_count = 0
+            logger.info("Preloading LLM model: %s via %s", self.settings.llm_model_name, self.settings.llm_provider)
             preload_messages = [
                 {"role": "system", "content": self._system_prompt()},
                 {"role": "user", "content": "Hi"},
             ]
-            async for _ in self._stream_ollama(preload_messages, model_name=self.settings.llm_model_name):
+            provider = self.settings.llm_provider.lower().strip()
+            stream = (
+                self._stream_ollama(preload_messages, model_name=self.settings.llm_model_name)
+                if provider == "ollama"
+                else self._stream_vllm_with_retries(preload_messages)
+            )
+            token_count = 0
+            async for _ in stream:
                 token_count += 1
                 if token_count > 3:
                     break

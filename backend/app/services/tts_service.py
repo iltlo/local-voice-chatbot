@@ -52,6 +52,18 @@ class PiperTTS:
             return None
         return Path(model_path).stem
 
+    @property
+    def default_model_path(self) -> str:
+        return self._default_model_path
+
+    @property
+    def chinese_model_path(self) -> str | None:
+        return self._chinese_model_path
+
+    @property
+    def chinese_fallback_model_path(self) -> str | None:
+        return self._chinese_fallback_model_path
+
     def runtime_status(self) -> dict[str, str | bool | None]:
         return {
             "tts_available": not self._fallback,

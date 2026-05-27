@@ -25,6 +25,43 @@ class VoicePipeline:
         self.llm = LocalLLM(settings)
         self.tts = PiperTTS(settings)
 
+    async def _stream_tts_segments(
+        self,
+        segments: list[str],
+        voice_model_path: str | None,
+        language_tag: str | None,
+        request_id: str,
+        mark_last_final: bool,
+    ) -> AsyncGenerator[tuple[ServerMessage, int], None]:
+        """Synthesize a list of text segments and yield (ServerMessage, chunk_bytes_len) pairs.
+
+        When *mark_last_final* is True the very last chunk receives ``is_final_chunk=True``;
+        otherwise every chunk is marked non-final (used for mid-stream flushes).
+        """
+        for seg_idx, segment in enumerate(segments, start=1):
+            stream_chunks = await asyncio.to_thread(
+                lambda seg=segment: list(self.tts.stream_synthesize(seg, voice_model_path, language_tag))
+            )
+            if not stream_chunks:
+                continue
+            tts_status = self.tts.runtime_status()
+            is_last_segment = mark_last_final and seg_idx == len(segments)
+            for chunk_idx, audio_chunk in enumerate(stream_chunks, start=1):
+                is_final = is_last_segment and chunk_idx == len(stream_chunks)
+                yield (
+                    ServerMessage(
+                        type="tts_audio_chunk",
+                        audio_base64=base64.b64encode(audio_chunk).decode("ascii"),
+                        sample_rate=self.settings.tts_sample_rate,
+                        request_id=request_id,
+                        is_final_chunk=is_final,
+                        tts_voice_id=tts_status.get("tts_last_voice_id"),
+                        tts_voice_reason=tts_status.get("tts_last_voice_reason"),
+                        tts_text_language=tts_status.get("tts_last_text_language"),
+                    ),
+                    len(audio_chunk),
+                )
+
     def _extract_flushable_segments(self, text: str, keep_last_complete: bool) -> tuple[list[str], str]:
         segments: list[str] = []
         start = 0
@@ -93,36 +130,22 @@ class VoicePipeline:
                 )
 
                 for segment in flushable_segments:
-                    stream_chunks = await asyncio.to_thread(
-                        lambda seg=segment: list(self.tts.stream_synthesize(seg, voice_model_path, stt_result.language_tag))
-                    )
-                    if not stream_chunks:
-                        continue
-
-                    tts_status = self.tts.runtime_status()
-                    for audio_chunk in stream_chunks:
+                    async for msg, chunk_bytes in self._stream_tts_segments(
+                        [segment], voice_model_path, stt_result.language_tag, request_id, False
+                    ):
                         tts_chunk_count += 1
                         logger.info(
                             "Streaming audio chunk: request_id=%s count=%d final=%s",
                             request_id,
                             tts_chunk_count,
-                            False,
+                            msg.is_final_chunk,
                         )
-                        yield ServerMessage(
-                            type="tts_audio_chunk",
-                            audio_base64=base64.b64encode(audio_chunk).decode("ascii"),
-                            sample_rate=self.settings.tts_sample_rate,
-                            request_id=request_id,
-                            is_final_chunk=False,
-                            tts_voice_id=tts_status.get("tts_last_voice_id"),
-                            tts_voice_reason=tts_status.get("tts_last_voice_reason"),
-                            tts_text_language=tts_status.get("tts_last_text_language"),
-                        )
+                        yield msg
                         logger.info(
                             "TTS audio ready: request_id=%s bytes=%d final=%s",
                             request_id,
-                            len(audio_chunk),
-                            False,
+                            chunk_bytes,
+                            msg.is_final_chunk,
                         )
 
             final_text = full_reply.strip()
@@ -133,40 +156,23 @@ class VoicePipeline:
                     final_segments = [tts_pending_text.strip()]
 
                 if final_segments:
-                    for seg_idx, segment in enumerate(final_segments, start=1):
-                        stream_chunks = await asyncio.to_thread(
-                            lambda seg=segment: list(self.tts.stream_synthesize(seg, voice_model_path, stt_result.language_tag))
+                    async for msg, chunk_bytes in self._stream_tts_segments(
+                        final_segments, voice_model_path, stt_result.language_tag, request_id, True
+                    ):
+                        tts_chunk_count += 1
+                        logger.info(
+                            "Streaming audio chunk: request_id=%s count=%d final=%s",
+                            request_id,
+                            tts_chunk_count,
+                            msg.is_final_chunk,
                         )
-                        if not stream_chunks:
-                            continue
-
-                        tts_status = self.tts.runtime_status()
-                        is_last_segment = seg_idx == len(final_segments)
-                        for chunk_idx, audio_chunk in enumerate(stream_chunks, start=1):
-                            is_final = is_last_segment and chunk_idx == len(stream_chunks)
-                            tts_chunk_count += 1
-                            logger.info(
-                                "Streaming audio chunk: request_id=%s count=%d final=%s",
-                                request_id,
-                                tts_chunk_count,
-                                is_final,
-                            )
-                            yield ServerMessage(
-                                type="tts_audio_chunk",
-                                audio_base64=base64.b64encode(audio_chunk).decode("ascii"),
-                                sample_rate=self.settings.tts_sample_rate,
-                                request_id=request_id,
-                                is_final_chunk=is_final,
-                                tts_voice_id=tts_status.get("tts_last_voice_id"),
-                                tts_voice_reason=tts_status.get("tts_last_voice_reason"),
-                                tts_text_language=tts_status.get("tts_last_text_language"),
-                            )
-                            logger.info(
-                                "TTS audio ready: request_id=%s bytes=%d final=%s",
-                                request_id,
-                                len(audio_chunk),
-                                is_final,
-                            )
+                        yield msg
+                        logger.info(
+                            "TTS audio ready: request_id=%s bytes=%d final=%s",
+                            request_id,
+                            chunk_bytes,
+                            msg.is_final_chunk,
+                        )
                 elif tts_chunk_count == 0:
                     logger.info(
                         "TTS audio not generated: request_id=%s chars=%d resolved_language=%s",

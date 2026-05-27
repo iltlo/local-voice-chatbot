@@ -21,46 +21,72 @@ Local voice-to-voice chatbot with low latency:
   - `backend/models/SenseVoiceSmall`
   - `backend/models/piper/en_US-amy-medium.onnx`
   - `backend/models/piper/en_US-amy-medium.onnx.json`
-  - `backend/bin/piper/piper/piper.exe`
+  - `backend/bin/piper/piper/piper` (Linux) or `piper.exe` (Windows)
 
 Pull the LLM once:
 
-```powershell
+```bash
 ollama pull gemma4:e2b
 ```
 
 ## Run With Docker (Recommended)
 
-```powershell
+```bash
 docker compose up --build
 ```
 
 Endpoints:
-- Frontend: `http://localhost:5173`
+- Frontend: `http://localhost:3000`
 - Backend: `http://localhost:8000`
 - Status: `http://localhost:8000/status`
 
 ## Run Locally (Without Docker)
 
-Backend:
+Backend — **Linux/macOS:**
+
+```bash
+cd backend
+chmod +x setup_backend.sh
+./setup_backend.sh
+.venv/bin/python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+```
+
+Backend — **Windows:**
 
 ```powershell
 cd backend
 .\setup_backend.ps1
-uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+.\.venv\Scripts\python.exe -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
-Frontend:
+Frontend (both platforms):
 
-```powershell
+```bash
 cd frontend
 npm install
 npm run dev
 ```
 
-## Useful Commands
+## Full Local Setup (models + runtime)
+
+Linux/macOS:
+
+```bash
+cd backend
+chmod +x setup_all.sh
+./setup_all.sh
+```
+
+Windows:
 
 ```powershell
+cd backend
+.\setup_all.ps1
+```
+
+## Useful Commands
+
+```bash
 docker compose up -d --build
 docker compose up -d --build frontend
 docker compose ps
