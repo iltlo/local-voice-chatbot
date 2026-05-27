@@ -18,6 +18,8 @@ class ServerMessage(BaseModel):
     text: Optional[str] = None
     token: Optional[str] = None
     transcript: Optional[str] = None
+    transcript_emotion: Optional[str] = None
+    transcript_raw: Optional[str] = None
     request_id: Optional[str] = None
     audio_base64: Optional[str] = None
     sample_rate: Optional[int] = Field(default=None)

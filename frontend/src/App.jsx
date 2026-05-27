@@ -3,6 +3,16 @@ import { useEffect, useMemo, useRef, useState } from "react";
 const WS_URL = import.meta.env.VITE_WS_URL || "ws://localhost:8000/ws";
 const STATUS_URL = WS_URL.replace("ws://", "http://").replace("wss://", "https://").replace(/\/ws$/, "/status");
 const ENABLE_BROWSER_TTS_FALLBACK = true;
+const EMOTION_EMOJI = {
+  happy: "😊",
+  sad: "😢",
+  angry: "😠",
+  fear: "😨",
+  surprised: "😮",
+  disgust: "🤢",
+  neutral: "😐",
+};
+const FALLBACK_EMOJI = "🙂";
 
 function bytesToBase64(bytes) {
   let binary = "";
@@ -28,7 +38,9 @@ export default function App() {
   const [socketState, setSocketState] = useState("connecting");
   const [isRecording, setIsRecording] = useState(false);
   const [transcript, setTranscript] = useState("");
+  const [transcriptRaw, setTranscriptRaw] = useState("");
   const [assistantText, setAssistantText] = useState("");
+  const [userEmotion, setUserEmotion] = useState("neutral");
   const [chatHistory, setChatHistory] = useState([]);
   const [status, setStatus] = useState("Hold Space to talk");
   const [runtime, setRuntime] = useState({
@@ -60,6 +72,7 @@ export default function App() {
   const audioContextRef = useRef(null);
   const playbackChainRef = useRef(Promise.resolve());
   const playbackGenerationRef = useRef(0);
+  const playbackPendingRef = useRef(0);
   const activeSourceRef = useRef(null);
   const hasPlayedAudioRef = useRef(false);
   const pendingSpeechRef = useRef("");
@@ -118,6 +131,8 @@ export default function App() {
         isAssistantStreamingRef.current = true;
 
         setTranscript(msg.transcript || "");
+        setTranscriptRaw(msg.transcript_raw || "");
+        setUserEmotion(msg.transcript_emotion || "neutral");
         setAssistantText("");
         hasPlayedAudioRef.current = false;
         pendingSpeechRef.current = "";
@@ -220,15 +235,29 @@ export default function App() {
         return;
       }
       event.preventDefault();
-      if (isSpacePressedRef.current) {
+
+      const shouldInterrupt =
+        isAssistantStreamingRef.current ||
+        ttsStreamActive ||
+        playbackPendingRef.current > 0 ||
+        !!activeSourceRef.current ||
+        window.speechSynthesis?.speaking;
+
+      // Prioritize interrupt even if a prior keyup was missed and space state got stuck.
+      if (shouldInterrupt) {
+        if (event.repeat) {
+          return;
+        }
+        isSpacePressedRef.current = true;
+        await interruptActiveResponse();
+        await startRecording();
+        return;
+      }
+
+      if (isSpacePressedRef.current || event.repeat) {
         return;
       }
       isSpacePressedRef.current = true;
-
-      if (isAssistantStreamingRef.current || ttsStreamActive || window.speechSynthesis?.speaking) {
-        await interruptActiveResponse();
-        return;
-      }
 
       await startRecording();
     };
@@ -315,6 +344,7 @@ export default function App() {
 
   function stopAllAudioOutput() {
     playbackGenerationRef.current += 1;
+    playbackPendingRef.current = 0;
     pendingSpeechRef.current = "";
     if (window.speechSynthesis) {
       window.speechSynthesis.cancel();
@@ -350,6 +380,26 @@ export default function App() {
     setTtsStreamActive(false);
     setStatus("Interrupted. Hold Space to talk");
     stopAllAudioOutput();
+  }
+
+  async function clearLlmContext() {
+    if (isAssistantStreamingRef.current || ttsStreamActive || window.speechSynthesis?.speaking) {
+      await interruptActiveResponse();
+    }
+
+    wsRef.current?.send(JSON.stringify({ type: "clear_context" }));
+
+    currentRequestIdRef.current = null;
+    interruptedRequestIdsRef.current.clear();
+    setTranscript("");
+    setTranscriptRaw("");
+    setUserEmotion("neutral");
+    setAssistantText("");
+    setChatHistory([]);
+    setStatus("Context cleared. Hold Space to talk");
+    stopAllAudioOutput();
+    setTtsStreamActive(false);
+    isAssistantStreamingRef.current = false;
   }
 
   function streamFallbackSpeech(forceFlush) {
@@ -433,6 +483,7 @@ export default function App() {
   async function enqueueAudioChunk(base64) {
     await ensureAudioContext();
     const generation = playbackGenerationRef.current;
+    playbackPendingRef.current += 1;
 
     playbackChainRef.current = playbackChainRef.current
       .then(async () => {
@@ -462,6 +513,9 @@ export default function App() {
       })
       .catch(() => {
         // Keep playback chain alive after decoding/playback errors.
+      })
+      .finally(() => {
+        playbackPendingRef.current = Math.max(0, playbackPendingRef.current - 1);
       });
   }
 
@@ -470,6 +524,14 @@ export default function App() {
       <header className="hero">
         <div className="hero-top">
           <p className="eyebrow">Local Realtime Voice Chatbot</p>
+          <button
+            type="button"
+            className="clear-context-btn"
+            onClick={clearLlmContext}
+            disabled={socketState !== "connected"}
+          >
+            Clear LLM Context
+          </button>
         </div>
         <h1>{`SenseVoice + ${runtime.configured_model || "LLM"} + Piper`}</h1>
         <p className="status">{status}</p>
@@ -496,8 +558,14 @@ export default function App() {
 
       <main className="grid">
         <section className="card">
-          <h2>You</h2>
+          <h2>
+            You
+            <span className="emotion-emoji" title={`Detected emotion: ${userEmotion || "unknown"}`}>
+              {EMOTION_EMOJI[userEmotion] || FALLBACK_EMOJI}
+            </span>
+          </h2>
           <p>{transcript || "Your transcript appears here."}</p>
+          {transcriptRaw ? <p className="sense-raw">SenseVoice raw: {transcriptRaw}</p> : null}
         </section>
 
         <section className="card accent">

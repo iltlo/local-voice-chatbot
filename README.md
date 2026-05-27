@@ -2,7 +2,7 @@
 
 A local, low-latency voice-to-voice chatbot using:
 - STT: SenseVoice (FunASR)
-- LLM: qwen3:4b (served locally via Ollama; closest available tag to Qwen3-4B-Inst-2507)
+- LLM: gemma4:e2b (served locally via Ollama)
 - TTS: Piper (CPU)
 - Backend: FastAPI + WebSocket
 - Frontend: React + Vite + MediaRecorder
@@ -12,13 +12,13 @@ A local, low-latency voice-to-voice chatbot using:
 1. Hold Space in the browser to record voice.
 2. Release Space to send the audio blob to FastAPI over WebSocket.
 3. Backend transcribes with SenseVoice and sends transcript text to UI.
-4. Transcript is passed to Qwen; tokens stream to UI in real time.
+4. Transcript is passed to Gemma; tokens stream to UI in real time.
 5. Backend pipelines LLM->TTS so synthesis runs concurrently while tokens continue streaming, reducing time-to-first-audio.
 6. Frontend shows runtime telemetry: LLM running/idle/offline and VRAM usage when available.
 
 ## Why this fits 12GB VRAM
 
-- qwen3:4b via Ollama keeps the LLM local and streams tokens with low latency.
+- gemma4:e2b via Ollama keeps the LLM local and streams tokens with low latency.
 - SenseVoice typically uses ~1-2GB VRAM.
 - Piper is CPU-based, preserving VRAM and reducing OOM risk.
 
@@ -54,7 +54,6 @@ cd backend
 
 Place your local assets:
 - Gemma model in Ollama (`ollama pull gemma4:e2b`)
- - Qwen model in Ollama (`ollama pull qwen3:4b`)
 - SenseVoice model dir at `backend/models/SenseVoiceSmall`
 - Piper binary at `backend/bin/piper/piper/piper.exe`
 - Piper model at `backend/models/piper/en_US-amy-medium.onnx`
@@ -62,7 +61,7 @@ Place your local assets:
 Install Ollama (Windows) and start it, then pull model:
 
 ```powershell
-ollama pull qwen3:4b
+ollama pull gemma4:e2b
 ```
 
 Run backend:

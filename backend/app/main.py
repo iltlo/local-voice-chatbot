@@ -211,6 +211,14 @@ async def websocket_chat(ws: WebSocket) -> None:
                 )
                 continue
 
+            if message_type == "clear_context":
+                if active_task and not active_task.done():
+                    await cancel_active(reason="context_cleared")
+
+                conversation_history.clear()
+                await ws.send_json({"type": "context_cleared"})
+                continue
+
             if message_type != "user_audio":
                 continue
 

@@ -54,8 +54,20 @@ class VoicePipeline:
 
         stt_result: STTResult = await asyncio.to_thread(self.stt.transcribe_with_metadata, audio_bytes, suffix)
         transcript = stt_result.text
-        logger.info("STT transcript: %r language_tag=%s", transcript, stt_result.language_tag)
-        yield ServerMessage(type="transcript", transcript=transcript, request_id=request_id)
+        logger.info(
+            "STT transcript: %r language_tag=%s emotion_tag=%s raw=%r",
+            transcript,
+            stt_result.language_tag,
+            stt_result.emotion_tag,
+            stt_result.raw_text,
+        )
+        yield ServerMessage(
+            type="transcript",
+            transcript=transcript,
+            transcript_emotion=stt_result.emotion_tag,
+            transcript_raw=stt_result.raw_text,
+            request_id=request_id,
+        )
         full_reply = ""
         tts_pending_text = ""
         llm_token_count = 0

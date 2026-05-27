@@ -20,14 +20,14 @@ services:
     environment:
       HOST: 0.0.0.0
       PORT: 8000
-      CORS_ORIGIN: http://localhost:5173
+      CORS_ORIGIN: http://localhost:3000
       LLM_PROVIDER: ollama
       VLLM_BASE_URL: http://vllm:8000
       VLLM_API_KEY: EMPTY
-      LLM_MODEL_NAME: qwen3.5:4b
+      LLM_MODEL_NAME: gemma4:e2b
       LLM_FALLBACK_ENABLED: "false"
       OLLAMA_BASE_URL: http://ollama:11434
-      OLLAMA_MODEL_NAME: qwen3.5:4b
+      OLLAMA_MODEL_NAME: gemma4:e2b
       HF_HOME: /app/models/hf-cache
       SENSEVOICE_MODEL_DIR: /app/models/SenseVoiceSmall
       SENSEVOICE_DEVICE: cpu
@@ -48,7 +48,7 @@ services:
     depends_on:
       - backend
     ports:
-      - "5173:80"
+      - "3000:80"
 
 volumes:
   ollama-data:

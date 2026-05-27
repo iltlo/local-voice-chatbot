@@ -15,12 +15,12 @@ class Settings(BaseSettings):
 
     # LLM provider: ollama (preferred) or vllm
     llm_provider: str = "ollama"
-    llm_model_name: str = "qwen3.5:4b"
+    llm_model_name: str = "gemma4:e2b"
     vllm_base_url: str = "http://localhost:8001"
     vllm_api_key: str = "EMPTY"
     llm_fallback_enabled: bool = False
     ollama_base_url: str = "http://localhost:11434"
-    ollama_model_name: str = "qwen3.5:4b"
+    ollama_model_name: str = "gemma4:e2b"
     ollama_thinking: bool = False
     llm_request_timeout_s: float = 10.0
     llm_n_ctx: int = 1024

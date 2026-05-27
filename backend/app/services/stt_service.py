@@ -67,7 +67,8 @@ class SenseVoiceSTT:
 
     def transcribe_with_metadata(self, audio_bytes: bytes, suffix: str = ".webm") -> STTResult:
         if self._fallback or self._model is None:
-            return STTResult(text=f"[{self._fallback_reason}]", language_tag=None)
+            fallback_text = f"[{self._fallback_reason}]"
+            return STTResult(text=fallback_text, language_tag=None, emotion_tag=None, raw_text=fallback_text)
 
         with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
             tmp.write(audio_bytes)
@@ -85,10 +86,17 @@ class SenseVoiceSTT:
                     return STTResult(
                         text=self._clean_transcript(raw_text),
                         language_tag=self._extract_language_tag(raw_text, first),
+                        emotion_tag=self._extract_emotion_tag(raw_text, first),
+                        raw_text=raw_text,
                     )
 
             raw_text = str(result)
-            return STTResult(text=self._clean_transcript(raw_text), language_tag=self._extract_language_tag(raw_text, None))
+            return STTResult(
+                text=self._clean_transcript(raw_text),
+                language_tag=self._extract_language_tag(raw_text, None),
+                emotion_tag=self._extract_emotion_tag(raw_text, None),
+                raw_text=raw_text,
+            )
         finally:
             tmp_path.unlink(missing_ok=True)
 
@@ -111,6 +119,46 @@ class SenseVoiceSTT:
 
         return None
 
+    def _extract_emotion_tag(self, raw_text: str, payload: dict[str, Any] | None) -> str | None:
+        if payload:
+            payload_emotion = payload.get("emotion") or payload.get("emo") or payload.get("mood")
+            if isinstance(payload_emotion, str):
+                mapped = self._normalize_emotion(payload_emotion)
+                if mapped:
+                    return mapped
+
+        for tag in self._LANG_TAG_PATTERN.findall(raw_text):
+            mapped = self._normalize_emotion(tag)
+            if mapped:
+                return mapped
+
+        return None
+
+    @staticmethod
+    def _normalize_emotion(value: str) -> str | None:
+        normalized = value.lower().strip()
+        if normalized.startswith("<|") and normalized.endswith("|>"):
+            normalized = normalized[2:-2]
+        if normalized.startswith("<") and normalized.endswith(">"):
+            normalized = normalized[1:-1]
+        normalized = normalized.strip().replace("-", "_").replace(" ", "_")
+        mapping = {
+            "happy": "happy",
+            "joy": "happy",
+            "excited": "happy",
+            "sad": "sad",
+            "angry": "angry",
+            "neutral": "neutral",
+            "calm": "neutral",
+            "fear": "fear",
+            "fearful": "fear",
+            "surprise": "surprised",
+            "surprised": "surprised",
+            "disgust": "disgust",
+            "disgusted": "disgust",
+        }
+        return mapping.get(normalized)
+
     def _clean_transcript(self, text: str) -> str:
         without_tags = self._TAG_PATTERN.sub(" ", text)
         cleaned = re.sub(r"\s+", " ", without_tags).strip()
@@ -121,3 +169,5 @@ class SenseVoiceSTT:
 class STTResult:
     text: str
     language_tag: str | None
+    emotion_tag: str | None = None
+    raw_text: str | None = None

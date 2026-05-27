@@ -22,7 +22,7 @@ class LocalLLM:
         return (
             "You are a concise and helpful local voice assistant. "
             "Keep answers brief and conversational. "
-            "Keep the first sentence short (about 8-12 words) so speech can start quickly. "
+            # "Keep the first sentence short (about 8-12 words) so speech can start quickly. "
             "Do not output emojis."
         )
 

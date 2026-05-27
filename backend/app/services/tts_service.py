@@ -118,6 +118,8 @@ class PiperTTS:
             candidates.append((self._cantonese_model_path, "cantonese_primary"))
         elif language == "chinese":
             candidates.append((self._chinese_model_path, "chinese_primary"))
+            candidates.append((self._chinese_fallback_model_path, "chinese_fallback"))
+            candidates.append((self._default_model_path, "chinese_default_fallback"))
         else:
             candidates.append((preferred_model, "default"))
             if preferred_model != self._default_model_path:
@@ -502,8 +504,22 @@ class PiperTTS:
         if len(run_texts) > 1 and not voice_model_path:
             logger.info("TTS mixed-language split applied: runs=%d", len(run_texts))
 
+        tagged_language = self._language_from_tag(stt_language_tag)
+        has_cantonese_model = bool(self._cantonese_model_path and Path(self._cantonese_model_path).exists())
+        is_mixed_runs = len(run_texts) > 1
+
         for run_text in run_texts:
-            for audio in self._stream_single_language_synthesis(run_text, voice_model_path, stt_language_tag):
+            run_language_tag = stt_language_tag
+            # For mixed-script replies, keep Chinese runs audible when no Cantonese Piper model is configured.
+            if (
+                is_mixed_runs
+                and tagged_language == "cantonese"
+                and not has_cantonese_model
+                and self._detect_language(run_text) == "chinese"
+            ):
+                run_language_tag = "chinese"
+
+            for audio in self._stream_single_language_synthesis(run_text, voice_model_path, run_language_tag):
                 yield audio
 
     def synthesize(
