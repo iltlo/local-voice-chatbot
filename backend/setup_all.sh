@@ -30,6 +30,9 @@ ensure_dir models/piper
 ensure_dir bin
 ensure_dir bin/piper
 
+# Fix ownership if directories were previously created by Docker (running as root)
+sudo chown -R "$(id -u):$(id -g)" models bin 2>/dev/null || true
+
 echo "[6/8] Download SenseVoiceSmall (ModelScope iic/SenseVoiceSmall)"
 .venv/bin/python -c "
 from modelscope import snapshot_download
@@ -51,6 +54,21 @@ curl -fSL "https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/amy
   -o "models/piper/en_US-amy-medium.onnx"
 curl -fSL "https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/amy/medium/en_US-amy-medium.onnx.json" \
   -o "models/piper/en_US-amy-medium.onnx.json"
+
+curl -fSL "https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/hfc_female/medium/en_US-hfc_female-medium.onnx" \
+  -o "models/piper/en_US-hfc_female-medium.onnx"
+curl -fSL "https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/hfc_female/medium/en_US-hfc_female-medium.onnx.json" \
+  -o "models/piper/en_US-hfc_female-medium.onnx.json"
+
+curl -fSL "https://huggingface.co/rhasspy/piper-voices/resolve/main/zh/zh_CN/xiao_ya/medium/zh_CN-xiao_ya-medium.onnx" \
+  -o "models/piper/zh_CN-xiao_ya-medium.onnx"
+curl -fSL "https://huggingface.co/rhasspy/piper-voices/resolve/main/zh/zh_CN/xiao_ya/medium/zh_CN-xiao_ya-medium.onnx.json" \
+  -o "models/piper/zh_CN-xiao_ya-medium.onnx.json"
+
+curl -fSL "https://huggingface.co/rhasspy/piper-voices/resolve/main/zh/zh_CN/huayan/medium/zh_CN-huayan-medium.onnx" \
+  -o "models/piper/zh_CN-huayan-medium.onnx"
+curl -fSL "https://huggingface.co/rhasspy/piper-voices/resolve/main/zh/zh_CN/huayan/medium/zh_CN-huayan-medium.onnx.json" \
+  -o "models/piper/zh_CN-huayan-medium.onnx.json"
 
 echo "[8/8] Verify Ollama and pull Gemma model"
 ollama --version

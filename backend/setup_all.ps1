@@ -43,6 +43,15 @@ Remove-Item $zipPath -Force
 Invoke-WebRequest -Uri "https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/amy/medium/en_US-amy-medium.onnx" -OutFile "models\piper\en_US-amy-medium.onnx"
 Invoke-WebRequest -Uri "https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/amy/medium/en_US-amy-medium.onnx.json" -OutFile "models\piper\en_US-amy-medium.onnx.json"
 
+Invoke-WebRequest -Uri "https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/hfc_female/medium/en_US-hfc_female-medium.onnx" -OutFile "models\piper\en_US-hfc_female-medium.onnx"
+Invoke-WebRequest -Uri "https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/hfc_female/medium/en_US-hfc_female-medium.onnx.json" -OutFile "models\piper\en_US-hfc_female-medium.onnx.json"
+
+Invoke-WebRequest -Uri "https://huggingface.co/rhasspy/piper-voices/resolve/main/zh/zh_CN/xiao_ya/medium/zh_CN-xiao_ya-medium.onnx" -OutFile "models\piper\zh_CN-xiao_ya-medium.onnx"
+Invoke-WebRequest -Uri "https://huggingface.co/rhasspy/piper-voices/resolve/main/zh/zh_CN/xiao_ya/medium/zh_CN-xiao_ya-medium.onnx.json" -OutFile "models\piper\zh_CN-xiao_ya-medium.onnx.json"
+
+Invoke-WebRequest -Uri "https://huggingface.co/rhasspy/piper-voices/resolve/main/zh/zh_CN/huayan/medium/zh_CN-huayan-medium.onnx" -OutFile "models\piper\zh_CN-huayan-medium.onnx"
+Invoke-WebRequest -Uri "https://huggingface.co/rhasspy/piper-voices/resolve/main/zh/zh_CN/huayan/medium/zh_CN-huayan-medium.onnx.json" -OutFile "models\piper\zh_CN-huayan-medium.onnx.json"
+
 Write-Host "[8/8] Verify Ollama and pull Gemma model"
 $ollamaVersion = ollama --version
 Write-Host $ollamaVersion
