@@ -7,6 +7,8 @@ Local voice-to-voice chatbot with low latency:
 - Backend: FastAPI + WebSocket
 - Frontend: React + Vite
 
+<img width="2846" height="1546" alt="Screenshot 2026-05-27 142352" src="https://github.com/user-attachments/assets/61bb5797-7fa6-46d2-9055-b59361122b1f" />
+
 ## Quick Flow
 
 1. Hold `Space` to record.
